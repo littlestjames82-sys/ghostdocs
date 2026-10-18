@@ -23,6 +23,13 @@ HOLD_TYPES = {"ssn", "credit-card", "api-key-shape", "password-assignment"}
 
 @dataclass
 class Finding:
+    """One sensitive-shape match: where it was found, never what it was.
+
+    Deliberately carries only the document path, the line number, and
+    the finding type (for example ``credit-card``). The matched value
+    is never stored, printed, or exported.
+    """
+
     path: str
     line: int
     type: str
@@ -32,6 +39,11 @@ class Finding:
 
 
 def _luhn_ok(digits: str) -> bool:
+    """Return True when *digits* passes the Luhn checksum.
+
+    Used to reduce false positives: a long digit string is only
+    treated as a card-number shape when it also checksums like one.
+    """
     total, alt = 0, False
     for ch in reversed(digits):
         d = int(ch)
@@ -45,6 +57,11 @@ def _luhn_ok(digits: str) -> bool:
 
 
 def scan_text(path: str, text: str) -> list[Finding]:
+    """Scan *text* for sensitive shapes, at most one finding per type per line.
+
+    ``path`` is only copied into the findings for reporting; the
+    matched values themselves are discarded.
+    """
     findings: list[Finding] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         for kind, pat in _PATTERNS:
@@ -59,4 +76,9 @@ def scan_text(path: str, text: str) -> list[Finding]:
 
 
 def hold_findings(findings: list[Finding]) -> list[Finding]:
+    """Return only the findings strong enough to hold a document out.
+
+    Ordinary contact details (email, phone) are reported but do not
+    hold a document out; see ``HOLD_TYPES``.
+    """
     return [f for f in findings if f.type in HOLD_TYPES]

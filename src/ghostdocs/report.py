@@ -13,6 +13,11 @@ from .scan import Corpus
 
 
 def render_report(corpus: Corpus) -> str:
+    """Render the corpus report as one self-contained HTML string.
+
+    No external assets are referenced, so the file works offline.
+    Held-out documents are named by path and finding type only.
+    """
     s = corpus.summary()
     total = corpus.total_tokens or 1
     rows = []
@@ -82,6 +87,9 @@ then newest date, and that ordering is a heuristic, not a fact.</p>
 
 
 def write_report(corpus: Corpus, out: Path) -> Path:
+    """Write :func:`render_report` to *out* and return the path written."""
     out = Path(out)
+    if out.parent != Path(""):
+        out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_report(corpus), encoding="utf-8")
     return out

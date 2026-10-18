@@ -18,19 +18,44 @@ _MONTHS = {m: i + 1 for i, m in enumerate(
 
 
 def find_date(text: str) -> str | None:
-    """First explicit ISO or 'Month D, YYYY' date in the text, normalised to ISO."""
+    """First explicit ISO or 'Month D, YYYY' date in the text, normalised to ISO.
+
+    "First" means first in the document, across both formats (the old code
+    always preferred an ISO date, however late in the text it appeared),
+    and the date must be a real calendar date: shapes like 2024-02-31 or
+    2026-03-39 are skipped, not treated as a document's date.
+    Returns ``None`` when the text carries no such date; callers then
+    fall back to the file modification date.
+    """
+    from datetime import date as _date
+
+    candidates: list[tuple[int, str]] = []
     for pat in _DATE_PATTERNS:
-        m = pat.search(text)
-        if m:
-            if pat is _DATE_PATTERNS[0]:
-                return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-            month = _MONTHS[m.group(1)]
-            return f"{m.group(3)}-{month:02d}-{int(m.group(2)):02d}"
-    return None
+        for m in pat.finditer(text):
+            try:
+                if pat is _DATE_PATTERNS[0]:
+                    parsed = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                else:
+                    parsed = _date(int(m.group(3)), _MONTHS[m.group(1)],
+                                   int(m.group(2)))
+            except ValueError:
+                continue
+            candidates.append((m.start(), parsed.isoformat()))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    return candidates[0][1]
 
 
 @dataclass
 class Section:
+    """One heading-delimited piece of a document.
+
+    ``heading_trail`` is the chain of ancestor headings (outermost
+    first), so a chunk can be identified without its whole document.
+    ``index`` is the section's position within its document.
+    """
+
     doc_path: str
     index: int
     title: str
@@ -60,8 +85,15 @@ def split_sections(doc_path: str, text: str) -> list[Section]:
                                     title=cur_title, heading_trail=list(trail),
                                     text=body))
 
+    in_fence = False
     for line in text.splitlines():
-        m = _HEADING.match(line)
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            # a '#' line inside a fenced code block is code, not a heading
+            in_fence = not in_fence
+            cur_lines.append(line)
+            continue
+        m = None if in_fence else _HEADING.match(line)
         if m:
             flush()
             level = len(m.group(1))
@@ -75,11 +107,17 @@ def split_sections(doc_path: str, text: str) -> list[Section]:
 
 
 def Path_title(doc_path: str) -> str:
+    """Fallback title for a heading-less document, from its file name.
+
+    For example ``returns-policy.md`` becomes ``returns policy``.
+    (The capitalised name is kept for compatibility.)
+    """
     name = doc_path.rsplit("/", 1)[-1]
     return name.rsplit(".", 1)[0].replace("-", " ").replace("_", " ")
 
 
 def first_paragraph(text: str) -> str:
+    """Return the first non-heading paragraph block in *text*, or ``""``."""
     for block in re.split(r"\n\s*\n", text):
         block = block.strip()
         if block and not block.startswith("#"):

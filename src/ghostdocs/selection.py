@@ -10,6 +10,11 @@ from .tokens import words
 
 
 def tfidf_scores(corpus: Corpus, task: str) -> dict[tuple[str, int], float]:
+    """Score every section in *corpus* against the *task* text (TF-IDF).
+
+    Returns a mapping of ``(doc_path, section_index)`` to score;
+    sections sharing no words with the task score 0.
+    """
     sections: list[Section] = [s for d in corpus.docs for s in d.sections]
     if not sections:
         return {}
@@ -36,7 +41,13 @@ def tfidf_scores(corpus: Corpus, task: str) -> dict[tuple[str, int], float]:
 
 def select_sections(corpus: Corpus, task: str | None,
                     docs: list) -> tuple[list[Section], dict]:
-    """Sections from the given docs; with a task, keep score>0 (fallback: top 5)."""
+    """Sections from the given docs, optionally narrowed to a task.
+
+    Without a task, every section of *docs* is returned. With a task,
+    only sections scoring above 0 are kept; if none score above 0, the
+    five best-scoring sections are returned as a fallback so an export
+    is never silently empty. Also returns the score mapping.
+    """
     all_sections = [s for d in docs for s in d.sections]
     if not task:
         return all_sections, {}

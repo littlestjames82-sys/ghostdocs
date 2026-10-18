@@ -18,6 +18,8 @@ _SKIP_DIRS = {".git", "__pycache__", ".ghostdocs-cache", "node_modules"}
 
 @dataclass
 class Doc:
+    """One covered document: its extraction, sections, date, and findings."""
+
     path: str                       # relative to corpus
     extraction: Extraction
     sections: list[Section] = field(default_factory=list)
@@ -57,6 +59,12 @@ class Doc:
 
 @dataclass
 class NotCovered:
+    """A file GhostDocs cannot read in this version, with the reason why.
+
+    Not-covered files are always named in scans, reports, and export
+    manifests; they are never silently skipped and never exported.
+    """
+
     path: str
     fmt: str
     reason: str
@@ -70,6 +78,14 @@ class NotCovered:
 
 @dataclass
 class Cluster:
+    """A group of exact or near-duplicate documents.
+
+    ``probable_current`` is the member treated as current (an
+    authoritative source if the profile names one, otherwise the
+    newest dated member, which is a heuristic, not a fact).
+    ``wasted_tokens`` counts the estimated tokens in the other members.
+    """
+
     members: list[str]
     kind: str                       # exact | near
     probable_current: str
@@ -87,6 +103,8 @@ class Cluster:
 
 @dataclass
 class Corpus:
+    """A scanned corpus: covered documents, not-covered files, and clusters."""
+
     root: Path
     profile: Profile
     docs: list[Doc] = field(default_factory=list)
@@ -221,20 +239,40 @@ def _clusters(docs: list[Doc], profile: Profile) -> list[Cluster]:
 
 
 def scan_corpus(root: Path, profile: Profile | None = None) -> Corpus:
+    """Scan the corpus folder at *root* and return a :class:`Corpus`.
+
+    Walks the folder recursively, extracts every covered file allowed
+    by *profile* (a default profile is used when none is given),
+    records every not-covered file with its reason, and then computes
+    duplicate clusters. Original files are only read, never changed.
+    """
     root = Path(root)
     profile = profile or Profile()
     corpus = Corpus(root=root, profile=profile)
     for path in sorted(root.rglob("*")):
-        if path.is_dir() or any(part in _SKIP_DIRS for part in path.parts):
+        if path.is_dir():
             continue
         rel = path.relative_to(root).as_posix()
+        # skip-dirs are judged on the path inside the corpus, not the whole
+        # filesystem path: a corpus that itself lives under a folder called
+        # e.g. "node_modules" used to scan as completely empty
+        if any(part in _SKIP_DIRS for part in rel.split("/")[:-1]):
+            continue
         if rel == ".ghostdocs.json":
             continue
         ext = path.suffix.lower()
         if ext in COVERED_EXTS:
             if not profile.included(rel):
                 continue
-            ex = extract_file(path)
+            try:
+                ex = extract_file(path)
+            except OSError as exc:
+                # a file that cannot be read is named, never a crash and
+                # never silently skipped (broken symlink, permissions, ...)
+                corpus.not_covered.append(NotCovered(
+                    path=rel, fmt=ext.lstrip("."),
+                    reason=f"file could not be read: {exc.strerror or exc}"))
+                continue
             if not ex.covered:
                 corpus.not_covered.append(NotCovered(
                     path=rel, fmt=ex.fmt, reason=ex.reason,
@@ -245,7 +283,13 @@ def scan_corpus(root: Path, profile: Profile | None = None) -> Corpus:
             if explicit:
                 date, source = explicit, "document"
             else:
-                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                try:
+                    mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                except OSError as exc:
+                    corpus.not_covered.append(NotCovered(
+                        path=rel, fmt=ext.lstrip("."),
+                        reason=f"file could not be read: {exc.strerror or exc}"))
+                    continue
                 date, source = mtime.date().isoformat(), "mtime"
             findings = scan_text(rel, ex.text)
             corpus.docs.append(Doc(path=rel, extraction=ex, sections=sections,
@@ -254,5 +298,13 @@ def scan_corpus(root: Path, profile: Profile | None = None) -> Corpus:
             if profile.included(rel):
                 corpus.not_covered.append(NotCovered(
                     path=rel, fmt=ext.lstrip("."), reason=NOT_COVERED_EXTS[ext]))
+        else:
+            # any other format (.csv, .png, no extension, ...) is named as
+            # not covered too: the README promises nothing is silently
+            # skipped, and the old code dropped these without a word
+            if profile.included(rel):
+                corpus.not_covered.append(NotCovered(
+                    path=rel, fmt=ext.lstrip(".") or "none",
+                    reason=f"format {ext or '(no extension)'} not covered in v0.1"))
     corpus.clusters = _clusters(corpus.docs, profile)
     return corpus

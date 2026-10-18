@@ -24,6 +24,13 @@ from .tokens import estimate_tokens
 
 @dataclass
 class ExportResult:
+    """Summary of one export run, including anything deliberately left out.
+
+    ``held_out``, ``superseded_skipped``, and ``not_covered`` list the
+    document paths in each category, so a caller can report exactly
+    what did not go into the export. ``fitted`` is False only when a
+    ``--fit`` budget was given and could not be met.
+    """
     out: Path
     total_tokens: int = 0
     raw_tokens: int = 0
@@ -41,6 +48,13 @@ def _render(section: Section, mode: str) -> str:
 
 
 def choose_docs(corpus: Corpus, allow_sensitive: bool = False):
+    """Split corpus documents into (exportable, held out, superseded skipped).
+
+    A document is held out when it has a holding sensitive finding
+    and *allow_sensitive* is False, and skipped when the profile
+    excludes superseded duplicates and the document is not its
+    cluster's probable current version.
+    """
     profile = corpus.profile
     superseded = corpus.superseded_paths()
     docs, held, skipped = [], [], []
@@ -58,6 +72,13 @@ def choose_docs(corpus: Corpus, allow_sensitive: bool = False):
 def export_corpus(corpus: Corpus, out: Path, task: str | None = None,
                   fit: int | None = None, shape: str = "both",
                   allow_sensitive: bool = False) -> ExportResult:
+    """Export *corpus* to the folder *out* and return an :class:`ExportResult`.
+
+    ``task`` optionally narrows the export to relevant sections,
+    ``fit`` is an estimated-token budget (see the module docstring for
+    the downgrade order), and ``shape`` is ``bundle``, ``chunks``, or
+    ``both``. The manifest is always written, whichever shape is used.
+    """
     profile: Profile = corpus.profile
     docs, held, skipped = choose_docs(corpus, allow_sensitive)
     sections, scores = select_sections(corpus, task, docs)
@@ -102,6 +123,21 @@ def export_corpus(corpus: Corpus, out: Path, task: str | None = None,
         fitted = total <= fit and bool(rendered)
 
     out = Path(out)
+    # Remember what a previous export into this same folder wrote, so files
+    # this run does not write (a document since held out as sensitive, a
+    # since-superseded version) do not linger on disk pretending to be part
+    # of the new bundle: the manifest would say held out while the sensitive
+    # text still sat in files/ from the earlier run.
+    prev_paths: set[str] = set()
+    prev_manifest = out / "manifest.json"
+    if prev_manifest.is_file():
+        try:
+            prev = json.loads(prev_manifest.read_text(encoding="utf-8"))
+            if isinstance(prev, dict) and isinstance(prev.get("files"), list):
+                prev_paths = {f["path"] for f in prev["files"]
+                              if isinstance(f, dict) and isinstance(f.get("path"), str)}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            prev_paths = set()
     out.mkdir(parents=True, exist_ok=True)
     by_doc: dict[str, list[tuple[Section, str, str]]] = {}
     for item in rendered:
@@ -168,6 +204,32 @@ def export_corpus(corpus: Corpus, out: Path, task: str | None = None,
                 fh.write(json.dumps(c, ensure_ascii=False) + "\n")
         if shape == "chunks":
             (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    # remove stale tool-owned artifacts from a previous export into out:
+    # exported files this run did not rewrite, plus PROMPT.md / chunks.jsonl
+    # when the new shape does not include them (their old text is content
+    # from the old export, e.g. a since-held-out document's sections)
+    written = set(by_doc) if shape in ("both", "bundle") else set()
+    files_root = out / "files"
+    for stale in sorted(prev_paths - written):
+        stale_rel = Path(stale)
+        if stale_rel.is_absolute() or ".." in stale_rel.parts:
+            continue  # never let a crafted old manifest point outside files/
+        target = files_root / (stale + ".txt")
+        try:
+            target.unlink()
+        except OSError:
+            continue
+        parent = target.parent
+        while parent != files_root and files_root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    if shape == "chunks":
+        (out / "PROMPT.md").unlink(missing_ok=True)
+    if shape == "bundle":
+        (out / "chunks.jsonl").unlink(missing_ok=True)
     return ExportResult(out=out, total_tokens=total_exported,
                         raw_tokens=corpus.total_tokens,
                         fitted=manifest["fitted"], fit_target=fit,
