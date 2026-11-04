@@ -1,5 +1,6 @@
 # GhostDocs
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/littlestjames82-sys/ghostdocs/actions/workflows/ci.yml/badge.svg)](https://github.com/littlestjames82-sys/ghostdocs/actions/workflows/ci.yml/actions)
 
 **Get your business documents ready for an AI assistant, without sending them anywhere.**
 
